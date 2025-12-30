@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Hand-Tracked 3D Point Cloud</title>
+    <meta name="description" content="Interactive 3D point cloud controlled by hand gestures using webcam and Three.js">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Loading overlay -->
+    <div id="loading" class="loading">
+        <div class="loading-content">
+            <div class="spinner"></div>
+            <p>Initializing hand tracking...</p>
+            <p class="loading-hint">Please allow camera access when prompted</p>
+        </div>
+    </div>
+
+    <!-- Instructions overlay -->
+    <div id="instructions" class="instructions hidden">
+        <h2>Hand Gestures</h2>
+        <ul>
+            <li><span class="gesture">✋ Move Forward/Back</span> Zoom in/out</li>
+            <li><span class="gesture">🔄 Rotate Hand</span> Rotate the cloud</li>
+            <li><span class="gesture">🤏 Pinch</span> Scale points</li>
+            <li><span class="gesture">✊ Close Fist</span> Compress particles</li>
+        </ul>
+        <button id="start-btn" class="start-btn">Start Experience</button>
+    </div>
+
+    <!-- Webcam video feed (hidden, used for tracking) -->
+    <video id="webcam" autoplay playsinline></video>
+
+    <!-- Webcam preview overlay -->
+    <div id="webcam-preview" class="webcam-preview hidden">
+        <canvas id="hand-canvas"></canvas>
+    </div>
+
+    <!-- Stats display -->
+    <div id="stats" class="stats hidden">
+        <span id="fps">60 FPS</span>
+        <span id="hand-status">No hand detected</span>
+    </div>
+
+    <!-- Main Three.js canvas container -->
+    <div id="canvas-container"></div>
+
+    <!-- Three.js from CDN -->
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+        }
+    }
+    </script>
+
+    <!-- MediaPipe Hands -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.min.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.min.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3.1675466124/drawing_utils.min.js" crossorigin="anonymous"></script>
+
+    <!-- App modules -->
+    <script type="module" src="js/main.js"></script>
+</body>
+</html>
