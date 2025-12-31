@@ -22,7 +22,8 @@ const handCanvas = document.getElementById('hand-canvas');
 
 // Scene components
 let sceneComponents;
-let pointCloud;
+let pinkObject;   // ALWAYS Left Hand
+let blueObject;   // ALWAYS Right Hand
 let ambientParticles;
 let glowRing;
 let handTracker;
@@ -33,8 +34,39 @@ let lastTime = 0;
 let frameCount = 0;
 let lastFpsUpdate = 0;
 
+// Layout State Machine
+// Defines target properties for each object based on hand state
+const LAYOUT_TARGETS = {
+    IDLE: {
+        pink: { x: 0, opacity: 0, scale: 0.1, wave: 0 },
+        blue: { x: 0, opacity: 0, scale: 0.1, wave: 0 }
+    },
+    LEFT_SOLO: {
+        pink: { x: 0, opacity: 1, scale: 1.0, wave: 0 },    // Center, Stable
+        blue: { x: 4, opacity: 0, scale: 0.5, wave: 1 }     // Hidden right
+    },
+    RIGHT_SOLO: {
+        pink: { x: -4, opacity: 0, scale: 0.5, wave: 1 },   // Hidden left
+        blue: { x: 0, opacity: 1, scale: 1.0, wave: 0 }     // Center, Stable
+    },
+    DUAL: {
+        pink: { x: -2.2, opacity: 1, scale: 0.8, wave: 1 }, // Left, Wavy
+        blue: { x: 2.2, opacity: 1, scale: 0.8, wave: 1 }   // Right, Wavy
+    }
+};
+
+// Current interpolated state
+const currentLayout = {
+    pink: { x: 0, opacity: 0, scale: 1, wave: 0 },
+    blue: { x: 0, opacity: 0, scale: 1, wave: 0 }
+};
+
 // Hand data state
-let handData = { detected: false };
+let handData = { 
+    left: { detected: false }, 
+    right: { detected: false }, 
+    bothDetected: false 
+};
 
 /**
  * Initializes the application
@@ -46,11 +78,17 @@ async function init() {
     sceneComponents = createScene(container);
     const { scene } = sceneComponents;
     
-    // Create point cloud
-    pointCloud = createPointCloud(scene);
+    // Create point cloud objects
+    // PINK OBJECT (Left Hand) - Hue ~0.9 (Pink/Magenta)
+    pinkObject = createPointCloud(scene); 
+    pinkObject.setVisualState({ hue: 0.85, opacity: 0 });
+    
+    // BLUE OBJECT (Right Hand) - Hue ~0.6 (Blue/Cyan)
+    blueObject = createPointCloud(scene);
+    blueObject.setVisualState({ hue: 0.55, opacity: 0 });
     
     // Create ambient effects
-    ambientParticles = createAmbientParticles(scene, 150);
+    ambientParticles = createAmbientParticles(scene, 200);
     glowRing = createGlowRing(scene);
     
     // Handle window resize
@@ -117,22 +155,13 @@ async function startExperience() {
 function onHandUpdate(data) {
     handData = data;
     
-    if (data.detected) {
-        handStatusEl.textContent = 'Hand detected';
+    const statusText = [];
+    if (data.left.detected) statusText.push("Left");
+    if (data.right.detected) statusText.push("Right");
+    
+    if (statusText.length > 0) {
+        handStatusEl.textContent = statusText.join(' + ') + ' Hand Detected';
         handStatusEl.classList.add('detected');
-        
-        // Map hand data to point cloud transforms
-        
-        // Pinch controls scale (0.5 to 2.0)
-        const scale = 0.5 + data.pinch * 1.5;
-        pointCloud.setScale(scale);
-        
-        // Hand rotation controls point cloud rotation
-        pointCloud.setRotation(data.rotation.x, data.rotation.y);
-        
-        // Forward/backward movement controls zoom
-        pointCloud.setZoom(data.zoom);
-        
     } else {
         handStatusEl.textContent = 'No hand detected';
         handStatusEl.classList.remove('detected');
@@ -140,16 +169,85 @@ function onHandUpdate(data) {
 }
 
 /**
- * Main animation loop
+ * Main animation loop with State Transition Logic
  */
 function animate() {
     animationId = requestAnimationFrame(animate);
     
     const currentTime = performance.now();
-    const deltaTime = (currentTime - lastTime) / 1000;
+    const dt = (currentTime - lastTime) / 1000;
+    const time = currentTime / 1000;
     lastTime = currentTime;
     
-    // Update FPS counter
+    // 1. Determine Target State
+    let targetKey = 'IDLE';
+    if (handData.bothDetected) {
+        targetKey = 'DUAL';
+    } else if (handData.left.detected) {
+        targetKey = 'LEFT_SOLO';
+    } else if (handData.right.detected) {
+        targetKey = 'RIGHT_SOLO';
+    }
+    
+    const target = LAYOUT_TARGETS[targetKey];
+    
+    // 2. Smoothly Interpolate Current Layout
+    const lerpSpeed = 3.0 * dt; // Adjust for smoothness
+    
+    // Helper to lerp object state
+    function lerpObjectState(current, targetObj) {
+        current.x += (targetObj.x - current.x) * lerpSpeed;
+        current.opacity += (targetObj.opacity - current.opacity) * lerpSpeed;
+        current.scale += (targetObj.scale - current.scale) * lerpSpeed;
+        current.wave += (targetObj.wave - current.wave) * lerpSpeed;
+    }
+    
+    lerpObjectState(currentLayout.pink, target.pink);
+    lerpObjectState(currentLayout.blue, target.blue);
+    
+    // 3. Apply Visuals to Objects
+    
+    // PINK OBJECT (Left)
+    pinkObject.group.position.x = currentLayout.pink.x;
+    pinkObject.setVisualState({
+        opacity: currentLayout.pink.opacity,
+        radiusScale: currentLayout.pink.scale,
+        waveAmount: currentLayout.pink.wave
+    });
+    
+    // BLUE OBJECT (Right)
+    blueObject.group.position.x = currentLayout.blue.x;
+    blueObject.setVisualState({
+        opacity: currentLayout.blue.opacity,
+        radiusScale: currentLayout.blue.scale,
+        waveAmount: currentLayout.blue.wave
+    });
+
+    // 4. Strict Control Mapping
+    // Left Hand -> Pink Object
+    if (handData.left.detected) {
+        updateObjectFromHand(pinkObject, handData.left);
+    }
+    
+    // Right Hand -> Blue Object
+    if (handData.right.detected) {
+        updateObjectFromHand(blueObject, handData.right);
+    }
+    
+    // 5. Ambient Effects
+    // Glow ring fades out in DUAL mode, stays in Solo
+    const isDual = targetKey === 'DUAL';
+    const glowTarget = isDual ? 0 : 0.2;
+    // Simple lerp for glow opacity
+    glowRing.ring.material.opacity += (glowTarget - glowRing.ring.material.opacity) * lerpSpeed;
+    
+    // Update Scene Components
+    pinkObject.update(time);
+    blueObject.update(time);
+    ambientParticles.update(time);
+    glowRing.update(time);
+    
+    // FPS
     frameCount++;
     if (currentTime - lastFpsUpdate > 500) {
         const fps = Math.round(frameCount / ((currentTime - lastFpsUpdate) / 1000));
@@ -158,18 +256,14 @@ function animate() {
         lastFpsUpdate = currentTime;
     }
     
-    // Get elapsed time in seconds
-    const time = currentTime / 1000;
-    
-    // Update point cloud animation
-    pointCloud.update(time);
-    
-    // Update ambient effects
-    ambientParticles.update(time);
-    glowRing.update(time);
-    
-    // Render with post-processing
     sceneComponents.composer.render();
+}
+
+function updateObjectFromHand(object, handState) {
+    const scale = 0.5 + handState.pinch * 1.5;
+    object.setScale(scale);
+    object.setRotation(handState.rotation.x, handState.rotation.y);
+    object.setZoom(handState.zoom);
 }
 
 /**

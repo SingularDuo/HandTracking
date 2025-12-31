@@ -47,17 +47,30 @@ const LANDMARKS = {
  * @param {Function} onHandUpdate - Callback when hand data is processed
  * @returns {Object} Hand tracking controller
  */
+/**
+ * Initializes hand tracking with MediaPipe
+ * @param {HTMLVideoElement} videoElement - Video element for camera feed
+ * @param {HTMLCanvasElement} canvasElement - Canvas for hand visualization
+ * @param {Function} onHandUpdate - Callback when hand data is processed
+ * @returns {Object} Hand tracking controller
+ */
 export async function initHandTracking(videoElement, canvasElement, onHandUpdate) {
     const ctx = canvasElement.getContext('2d');
     
-    // State for smoothed values
-    const state = {
-        handDetected: false,
+    // State for smoothed values - separated by hand
+    const createHandState = () => ({
+        detected: false,
         smoothedPosition: { x: 0.5, y: 0.5, z: 0.5 },
         smoothedPinch: 1,
         smoothedRotation: { x: 0, y: 0 },
-        baselineZ: null,     // Reference Z position
+        baselineZ: null,
         lastLandmarks: null
+    });
+
+    const state = {
+        left: createHandState(),
+        right: createHandState(),
+        bothDetected: false
     };
     
     // Initialize MediaPipe Hands
@@ -68,7 +81,7 @@ export async function initHandTracking(videoElement, canvasElement, onHandUpdate
     });
     
     hands.setOptions({
-        maxNumHands: CONFIG.hands.maxNumHands,
+        maxNumHands: 2, // Changed from 1 to 2
         modelComplexity: CONFIG.hands.modelComplexity,
         minDetectionConfidence: CONFIG.hands.minDetectionConfidence,
         minTrackingConfidence: CONFIG.hands.minTrackingConfidence
@@ -80,32 +93,88 @@ export async function initHandTracking(videoElement, canvasElement, onHandUpdate
         ctx.save();
         ctx.clearRect(0, 0, canvasElement.width, canvasElement.height);
         ctx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+        // Reset detection status before processing
+        state.left.detected = false;
+        state.right.detected = false;
+        state.bothDetected = false;
+
+        const outputData = {
+            left: { detected: false },
+            right: { detected: false },
+            bothDetected: false
+        };
         
         if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-            const landmarks = results.multiHandLandmarks[0];
-            state.handDetected = true;
-            state.lastLandmarks = landmarks;
             
-            // Draw hand landmarks
-            drawHand(ctx, landmarks, canvasElement.width, canvasElement.height);
-            
-            // Extract and smooth gesture data
-            const gestureData = extractGestureData(landmarks, state);
-            
-            // Call update callback with processed data
-            onHandUpdate({
-                detected: true,
-                position: gestureData.position,
-                pinch: gestureData.pinch,
-                rotation: gestureData.rotation,
-                zoom: gestureData.zoom,
-                fist: gestureData.fist
-            });
-        } else {
-            state.handDetected = false;
-            onHandUpdate({ detected: false });
+            // Helper to get raw data bundle
+            const handsData = [];
+            for (let i = 0; i < results.multiHandLandmarks.length; i++) {
+                const landmarks = results.multiHandLandmarks[i];
+                const label = results.multiHandedness[i].label;
+                const wristX = landmarks[0].x; // Use wrist X for sorting
+                handsData.push({ landmarks, label, x: wristX });
+            }
+
+            // SPATIAL SORTING LOGIC
+            // If 2 hands, FORCE Leftmost -> Left, Rightmost -> Right
+            // If 1 hand, Use label (maybe adjusted for mirroring)
+
+            if (handsData.length === 2) {
+                // Sort by X coordinate (ascending)
+                // 0.0 is left, 1.0 is right
+                handsData.sort((a, b) => a.x - b.x);
+
+                // Assign Left (index 0)
+                processHand(handsData[0], 'Left');
+                
+                // Assign Right (index 1)
+                processHand(handsData[1], 'Right');
+                
+                state.bothDetected = true;
+                outputData.bothDetected = true;
+
+            } else {
+                // Single Hand Case
+                // MediaPipe 'Left' usually appears on Right side of screen in mirror mode?
+                // Actually, let's trust the label but be consistent. 
+                // Or better: Spatial check. If x < 0.5 -> Left, else Right? 
+                // Let's stick to the label for strict "Handedness", but many users find 
+                // "Left side of screen controls Left" more intuitive.
+                // Given the user request for "Pink=Left", let's trust the label provided by MP which is generally robust for single hands.
+                
+                const hand = handsData[0];
+                processHand(hand, hand.label);
+            }
         }
         
+        // Helper to process a single hand
+        function processHand(handDataRaw, forcedLabel) {
+             const handKey = forcedLabel.toLowerCase(); // 'left' or 'right'
+             
+             if (state[handKey]) {
+                const handState = state[handKey];
+                handState.detected = true;
+                handState.lastLandmarks = handDataRaw.landmarks;
+
+                // Draw hand landmarks with the ASSIGNED label color
+                drawHand(ctx, handDataRaw.landmarks, canvasElement.width, canvasElement.height, forcedLabel);
+
+                // Extract and smooth gesture data
+                const gestureData = extractGestureData(handDataRaw.landmarks, handState);
+                
+                outputData[handKey] = {
+                    detected: true,
+                    position: gestureData.position,
+                    pinch: gestureData.pinch,
+                    rotation: gestureData.rotation,
+                    zoom: gestureData.zoom,
+                    fist: gestureData.fist
+                };
+             }
+        }
+        
+        onHandUpdate(outputData);
         ctx.restore();
     });
     
@@ -127,7 +196,8 @@ export async function initHandTracking(videoElement, canvasElement, onHandUpdate
          * Resets baseline position for depth tracking
          */
         resetBaseline() {
-            state.baselineZ = null;
+            state.left.baselineZ = null;
+            state.right.baselineZ = null;
         },
         /**
          * Updates canvas size
@@ -142,12 +212,11 @@ export async function initHandTracking(videoElement, canvasElement, onHandUpdate
 /**
  * Extracts gesture data from hand landmarks
  */
-function extractGestureData(landmarks, state) {
+function extractGestureData(landmarks, handState) {
     const wrist = landmarks[LANDMARKS.WRIST];
     const thumbTip = landmarks[LANDMARKS.THUMB_TIP];
     const indexTip = landmarks[LANDMARKS.INDEX_TIP];
     const middleTip = landmarks[LANDMARKS.MIDDLE_TIP];
-    const indexMcp = landmarks[LANDMARKS.INDEX_MCP];
     
     // Calculate hand center position
     const centerX = wrist.x;
@@ -155,19 +224,19 @@ function extractGestureData(landmarks, state) {
     const centerZ = wrist.z;
     
     // Initialize baseline Z if not set
-    if (state.baselineZ === null) {
-        state.baselineZ = centerZ;
+    if (handState.baselineZ === null) {
+        handState.baselineZ = centerZ;
     }
     
     // Smooth position
-    state.smoothedPosition.x = lerp(state.smoothedPosition.x, centerX, CONFIG.smoothing.position);
-    state.smoothedPosition.y = lerp(state.smoothedPosition.y, centerY, CONFIG.smoothing.position);
-    state.smoothedPosition.z = lerp(state.smoothedPosition.z, centerZ, CONFIG.smoothing.position);
+    handState.smoothedPosition.x = lerp(handState.smoothedPosition.x, centerX, CONFIG.smoothing.position);
+    handState.smoothedPosition.y = lerp(handState.smoothedPosition.y, centerY, CONFIG.smoothing.position);
+    handState.smoothedPosition.z = lerp(handState.smoothedPosition.z, centerZ, CONFIG.smoothing.position);
     
     // Calculate pinch distance (thumb to index)
     const pinchDist = distance3D(thumbTip, indexTip);
     const pinchNormalized = Math.min(1, pinchDist / 0.2);
-    state.smoothedPinch = lerp(state.smoothedPinch, pinchNormalized, CONFIG.smoothing.gesture);
+    handState.smoothedPinch = lerp(handState.smoothedPinch, pinchNormalized, CONFIG.smoothing.gesture);
     
     // Calculate hand rotation based on palm orientation
     const palmVector = {
@@ -179,19 +248,19 @@ function extractGestureData(landmarks, state) {
     const rotationX = Math.atan2(palmVector.z, palmVector.y) * CONFIG.gestures.rotationSensitivity;
     const rotationY = Math.atan2(palmVector.x, palmVector.y) * CONFIG.gestures.rotationSensitivity;
     
-    state.smoothedRotation.x = lerp(state.smoothedRotation.x, rotationX, CONFIG.smoothing.gesture);
-    state.smoothedRotation.y = lerp(state.smoothedRotation.y, rotationY, CONFIG.smoothing.gesture);
+    handState.smoothedRotation.x = lerp(handState.smoothedRotation.x, rotationX, CONFIG.smoothing.gesture);
+    handState.smoothedRotation.y = lerp(handState.smoothedRotation.y, rotationY, CONFIG.smoothing.gesture);
     
     // Calculate zoom from Z depth change
-    const zDelta = (state.baselineZ - state.smoothedPosition.z) * CONFIG.gestures.depthSensitivity;
+    const zDelta = (handState.baselineZ - handState.smoothedPosition.z) * CONFIG.gestures.depthSensitivity;
     
     // Detect fist (average finger curl)
     const fistAmount = calculateFistAmount(landmarks);
     
     return {
-        position: { ...state.smoothedPosition },
-        pinch: state.smoothedPinch,
-        rotation: { ...state.smoothedRotation },
+        position: { ...handState.smoothedPosition },
+        pinch: handState.smoothedPinch,
+        rotation: { ...handState.smoothedRotation },
         zoom: zDelta,
         fist: fistAmount
     };
@@ -229,14 +298,18 @@ function calculateFistAmount(landmarks) {
         const curl = tipDist < mcpDist ? 1 - (tipDist / mcpDist) : 0;
         totalCurl += curl;
     }
-    
-    return totalCurl / fingerTips.length;
+
+    // Clamp value between 0 and 1
+    return Math.max(0, Math.min(1, totalCurl / fingerTips.length));
 }
 
 /**
  * Draws hand landmarks on canvas
  */
-function drawHand(ctx, landmarks, width, height) {
+/**
+ * Draws hand landmarks on canvas
+ */
+function drawHand(ctx, landmarks, width, height, label) {
     // Draw connections
     const connections = [
         [0, 1], [1, 2], [2, 3], [3, 4],           // Thumb
@@ -247,7 +320,15 @@ function drawHand(ctx, landmarks, width, height) {
         [5, 9], [9, 13], [13, 17]                  // Palm
     ];
     
-    ctx.strokeStyle = 'rgba(139, 92, 246, 0.6)';
+    // Color scheme based on hand side -- MATCHING 3D OBJECT COLORS
+    // LEFT HAND -> PINK (Hue ~320/0.9)
+    // RIGHT HAND -> BLUE/CYAN (Hue ~180/0.55)
+    
+    // Note: 'label' here comes from our Spatial Sorting (Left side of screen = 'Left')
+    const isLeft = label === 'Left';
+    const mainColor = isLeft ? 'rgba(236, 72, 153, 0.6)' : 'rgba(6, 182, 212, 0.6)'; // Pink vs Cyan
+    
+    ctx.strokeStyle = mainColor;
     ctx.lineWidth = 2;
     
     for (const [i, j] of connections) {
@@ -265,9 +346,10 @@ function drawHand(ctx, landmarks, width, height) {
         const x = landmark.x * width;
         const y = landmark.y * height;
         
-        // Gradient from purple to cyan based on index
-        const hue = 280 - (i / landmarks.length) * 100;
-        ctx.fillStyle = `hsla(${hue}, 80%, 60%, 0.9)`;
+        // Gradient coloring
+        ctx.fillStyle = isLeft 
+            ? `hsla(${320 + i * 2}, 80%, 60%, 0.9)` // Pink range
+            : `hsla(${180 + i * 2}, 80%, 60%, 0.9)`; // Cyan range
         
         ctx.beginPath();
         ctx.arc(x, y, 4, 0, Math.PI * 2);

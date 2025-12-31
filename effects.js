@@ -152,10 +152,10 @@ export function createAmbientParticles(scene, count = 100) {
         for (let i = 0; i < count; i++) {
             const idx = i * 3;
             
-            // Gentle floating motion
-            pos[idx] += velocities[i].x + Math.sin(time + i) * 0.002;
-            pos[idx + 1] += velocities[i].y + Math.cos(time * 0.7 + i) * 0.002;
-            pos[idx + 2] += velocities[i].z + Math.sin(time * 0.5 + i) * 0.002;
+            // Gentle floating motion - Slower for premium feel
+            pos[idx] += velocities[i].x * 0.5 + Math.sin(time * 0.5 + i) * 0.001;
+            pos[idx + 1] += velocities[i].y * 0.5 + Math.cos(time * 0.3 + i) * 0.001;
+            pos[idx + 2] += velocities[i].z * 0.5 + Math.sin(time * 0.2 + i) * 0.001;
             
             // Wrap around if too far
             const dist = Math.sqrt(pos[idx] ** 2 + pos[idx + 1] ** 2 + pos[idx + 2] ** 2);
@@ -169,8 +169,8 @@ export function createAmbientParticles(scene, count = 100) {
         
         geometry.attributes.position.needsUpdate = true;
         
-        // Pulse opacity
-        material.opacity = 0.2 + Math.sin(time * 0.5) * 0.1;
+        // Pulse opacity - subtle breathing
+        material.opacity = 0.15 + Math.sin(time * 0.3) * 0.05;
     }
     
     return {
@@ -185,11 +185,11 @@ export function createAmbientParticles(scene, count = 100) {
  * @returns {Object} Glow ring with update method
  */
 export function createGlowRing(scene) {
-    const geometry = new THREE.RingGeometry(1.8, 2.2, 64);
+    const geometry = new THREE.RingGeometry(1.9, 2.1, 128); // Thinner, smoother ring
     const material = new THREE.MeshBasicMaterial({
         color: 0x8b5cf6,
         transparent: true,
-        opacity: 0.2,
+        opacity: 0.15, // More subtle
         side: THREE.DoubleSide,
         blending: THREE.AdditiveBlending
     });

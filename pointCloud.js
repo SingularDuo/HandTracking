@@ -40,18 +40,32 @@ const CONFIG = {
  * @param {THREE.Scene} scene - Three.js scene
  * @returns {Object} Point cloud object with update methods
  */
+/**
+ * Creates the main point cloud with sphere and rings
+ * @param {THREE.Scene} scene - Three.js scene
+ * @param {string} type - 'center' | 'side'
+ * @param {number} colorHue - Base hue for the object
+ * @returns {Object} Point cloud object with update methods
+ */
+/**
+ * Creates the main point cloud with sphere and rings
+ * @param {THREE.Scene} scene - Three.js scene
+ * @returns {Object} Point cloud object with update methods
+ */
 export function createPointCloud(scene) {
     const group = new THREE.Group();
     
-    // Store original positions for animation
-    const originalPositions = [];
+    // We'll initialize with "Max" settings (Center-like) to allocate enough points
+    const config = { ...CONFIG };
+    config.colors = { ...CONFIG.colors, primary: { ...CONFIG.colors.primary } };
     
-    // Create main sphere point cloud
-    const sphereGeometry = createSphereGeometry();
-    const sphereMaterial = createPointMaterial();
+    // Create geometry with max settings
+    const sphereGeometry = createSphereGeometry(config);
+    const sphereMaterial = createPointMaterial(config);
     const spherePoints = new THREE.Points(sphereGeometry, sphereMaterial);
     
-    // Store original positions
+    // Store original positions for animation
+    const originalPositions = [];
     const positions = sphereGeometry.attributes.position.array;
     for (let i = 0; i < positions.length; i += 3) {
         originalPositions.push({
@@ -63,18 +77,30 @@ export function createPointCloud(scene) {
     
     group.add(spherePoints);
     
-    // Create orbital rings
+    // Create orbital rings (max count)
     const rings = [];
-    for (let i = 0; i < CONFIG.ringCount; i++) {
-        const ring = createOrbitalRing(i);
+    for (let i = 0; i < config.ringCount; i++) {
+        const ring = createOrbitalRing(i, config);
         rings.push(ring);
         group.add(ring.points);
     }
     
     scene.add(group);
     
-    // Transform state (controlled by hand)
-    const state = {
+    // Visual State Management
+    // We lerp these values every frame
+    const currentState = {
+        hue: config.colors.primary.h,
+        waveAmount: 0,          // 0 = perfect sphere, >0 = wavy
+        radiusScale: 1.0,       // 1.0 = center size, 0.7 = side size
+        spinSpeedMultiplier: 1, // 1 = normal, >1 = fast
+        opacity: 1.0            // Master opacity
+    };
+    
+    const targetState = { ...currentState };
+    
+    // Transform State (Interactive)
+    const transformState = {
         targetScale: 1,
         currentScale: 1,
         targetRotationX: 0,
@@ -82,76 +108,114 @@ export function createPointCloud(scene) {
         currentRotationX: 0,
         currentRotationY: 0,
         targetZoom: 0,
-        currentZoom: 0,
-        particleDensity: 1  // 0-1, affects opacity
+        currentZoom: 0
     };
     
     /**
-     * Updates point cloud based on time and hand input
-     * @param {number} time - Elapsed time in seconds
+     * Updates point cloud visuals and physics
      */
     function update(time) {
-        // Smooth interpolation of transforms
-        state.currentScale += (state.targetScale - state.currentScale) * 0.08;
-        state.currentRotationX += (state.targetRotationX - state.currentRotationX) * 0.06;
-        state.currentRotationY += (state.targetRotationY - state.currentRotationY) * 0.06;
-        state.currentZoom += (state.targetZoom - state.currentZoom) * 0.05;
+        // 1. Lerp Visual State (Smooth transition between Center/Side modes)
+        const lerpSpeed = 0.05;
+        currentState.hue += (targetState.hue - currentState.hue) * lerpSpeed;
+        currentState.waveAmount += (targetState.waveAmount - currentState.waveAmount) * lerpSpeed;
+        currentState.radiusScale += (targetState.radiusScale - currentState.radiusScale) * lerpSpeed;
+        currentState.spinSpeedMultiplier += (targetState.spinSpeedMultiplier - currentState.spinSpeedMultiplier) * lerpSpeed;
+        currentState.opacity += (targetState.opacity - currentState.opacity) * lerpSpeed;
+
+        // Apply Opacity
+        sphereMaterial.opacity = 0.9 * currentState.opacity;
+        sphereMaterial.visible = currentState.opacity > 0.01;
+        rings.forEach(r => {
+             r.points.material.opacity = 0.6 * currentState.opacity;
+             r.points.visible = currentState.opacity > 0.01;
+        });
+
+        // 2. Lerp Interactive Transforms
+        transformState.currentScale += (transformState.targetScale - transformState.currentScale) * 0.1;
+        transformState.currentRotationX += (transformState.targetRotationX - transformState.currentRotationX) * 0.1;
+        transformState.currentRotationY += (transformState.targetRotationY - transformState.currentRotationY) * 0.1;
+        transformState.currentZoom += (transformState.targetZoom - transformState.currentZoom) * 0.08;
         
-        // Apply transforms to group
-        group.scale.setScalar(state.currentScale);
-        group.rotation.x = state.currentRotationX + time * CONFIG.animation.rotationSpeed * 0.3;
-        group.rotation.y = state.currentRotationY + time * CONFIG.animation.rotationSpeed;
-        group.position.z = state.currentZoom;
+        // 3. Apply Group Transforms
+        // Base scale combined with visual mode radius scale
+        group.scale.setScalar(transformState.currentScale * currentState.radiusScale);
         
-        // Animate sphere points
-        animateSpherePoints(sphereGeometry, originalPositions, time);
+        // Rotation: Mix of auto-spin and user control
+        // If waveAmount is high (Side mode), we allow more X rotation
+        const userRotInfluence = Math.min(1, currentState.waveAmount * 5); // 0 at center, 1 at side
         
-        // Animate orbital rings
+        // Auto spin (Y)
+        const autoSpin = time * 0.05 * currentState.spinSpeedMultiplier;
+        
+        group.rotation.y = autoSpin + transformState.currentRotationY;
+        // X rotation: mostly user controlled, but stabilized when in 'center' mode
+        group.rotation.x = (Math.sin(time * 0.2) * 0.05) * (1 - userRotInfluence) + transformState.currentRotationX * userRotInfluence;
+        
+        group.position.z = transformState.currentZoom;
+        
+        // 4. Animate Points
+        animateSpherePoints(sphereGeometry, originalPositions, time, currentState);
+        
+        // 5. Animate Rings
         rings.forEach((ring, i) => {
-            ring.points.rotation.x = time * 0.5 * (i % 2 === 0 ? 1 : -1);
-            ring.points.rotation.y = time * 0.3 * (i % 2 === 0 ? -1 : 1);
-            ring.points.rotation.z = time * 0.2;
-            animateRingPoints(ring, time, i);
+            // Rings rotate faster/differently based on mode? 
+            // Keep it simple for continuity
+            ring.points.rotation.x = time * 0.1 * (i % 2 === 0 ? 1 : -1);
+            ring.points.rotation.y = time * 0.05;
+            
+            // Fade out outer rings if scaling down
+            // If radiusScale < 0.8, hide outer rings? 
+            // Let's just scale them with the group for now.
+            
+            animateRingPoints(ring, time, i, currentState);
         });
         
-        // Pulse point sizes
-        const pulse = 1 + Math.sin(time * CONFIG.animation.pulseSpeed) * CONFIG.animation.pulseAmount;
+        // 6. Pulse & Color
+        const pulse = 1 + Math.sin(time * CONFIG.animation.pulseSpeed) * CONFIG.animation.pulseAmount * currentState.spinSpeedMultiplier;
         sphereMaterial.size = CONFIG.sphere.pointSize * pulse;
         
-        // Cycle colors
-        const hue = (CONFIG.colors.primary.h + time * CONFIG.animation.colorCycleSpeed * 0.1) % 1;
-        sphereMaterial.color.setHSL(hue, CONFIG.colors.primary.s, CONFIG.colors.primary.l);
+        // Color
+        // Dynamic hue cycling if it's the specific side hue (optional)
+        // For now just stick to current Hue
+        const cycle = Math.sin(time * 0.2) * 0.05;
+        // If strictly center (waveAmount 0), less cycle
+        const cycleAmount = cycle * Math.min(1, currentState.waveAmount * 2);
+        
+        sphereMaterial.color.setHSL(currentState.hue + cycleAmount, 0.8, 0.6);
     }
     
     /**
-     * Sets target scale (controlled by pinch gesture)
+     * Sets the high-level visual mode parameters
+     * @param {Object} params - { hue, waveAmount, radiusScale, opacity }
      */
+    function setVisualState(params) {
+        if (params.hue !== undefined) targetState.hue = params.hue;
+        if (params.waveAmount !== undefined) targetState.waveAmount = params.waveAmount;
+        if (params.radiusScale !== undefined) targetState.radiusScale = params.radiusScale;
+        if (params.spinSpeed !== undefined) targetState.spinSpeedMultiplier = params.spinSpeed;
+        if (params.opacity !== undefined) targetState.opacity = params.opacity;
+    }
+    
+    // ... Control methods ...
     function setScale(scale) {
-        state.targetScale = Math.max(0.3, Math.min(3, scale));
+        transformState.targetScale = Math.max(0.1, Math.min(3, scale));
     }
-    
-    /**
-     * Sets target rotation (controlled by hand rotation)
-     */
     function setRotation(x, y) {
-        state.targetRotationX = x;
-        state.targetRotationY = y;
+        transformState.targetRotationX = x;
+        transformState.targetRotationY = y;
     }
-    
-    /**
-     * Sets zoom level (controlled by hand depth)
-     */
     function setZoom(zoom) {
-        state.targetZoom = Math.max(-3, Math.min(3, zoom));
+        transformState.targetZoom = Math.max(-5, Math.min(2, zoom));
     }
-    
+
     return {
         group,
         update,
+        setVisualState, // New API
         setScale,
         setRotation,
-        setZoom,
-        state
+        setZoom
     };
 }
 
@@ -219,8 +283,11 @@ function createPointMaterial() {
 /**
  * Creates an orbital ring of particles
  */
-function createOrbitalRing(index) {
-    const radius = CONFIG.sphere.radius + (index + 1) * CONFIG.ringSpacing;
+/**
+ * Creates an orbital ring of particles
+ */
+function createOrbitalRing(index, config) {
+    const radius = config.sphere.radius + (index + 1) * config.ringSpacing;
     const segments = 80 + index * 20;
     const positions = [];
     const colors = [];
@@ -237,8 +304,9 @@ function createOrbitalRing(index) {
         
         // Color varies along ring
         const color = new THREE.Color();
-        const hue = (CONFIG.colors.secondary.h + index * 0.1 + i / segments * 0.1) % 1;
-        color.setHSL(hue, CONFIG.colors.secondary.s, CONFIG.colors.secondary.l);
+        // Use complementary or analogous color
+        const hue = (config.colors.primary.h + 0.5 + index * 0.05) % 1; 
+        color.setHSL(hue, 0.8, 0.6);
         colors.push(color.r, color.g, color.b);
     }
     
@@ -247,10 +315,10 @@ function createOrbitalRing(index) {
     geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
     
     const material = new THREE.PointsMaterial({
-        size: CONFIG.sphere.pointSize * 0.7,
+        size: config.sphere.pointSize * 0.7,
         vertexColors: true,
         transparent: true,
-        opacity: 0.7,
+        opacity: 0.6,
         blending: THREE.AdditiveBlending,
         depthWrite: false,
         sizeAttenuation: true
@@ -262,45 +330,63 @@ function createOrbitalRing(index) {
 }
 
 /**
- * Animates sphere points with wave effect
+ * Animates sphere points - STABLE (Center)
  */
-function animateSpherePoints(geometry, originalPositions, time) {
+/**
+ * Animates sphere points blending between Stable (Center) and Dynamic (Side) based on state
+ */
+function animateSpherePoints(geometry, originalPositions, time, state) {
     const positions = geometry.attributes.position.array;
+    const waveInfluence = Math.min(1, state.waveAmount * 2); // 0 to 1
     
     for (let i = 0; i < originalPositions.length; i++) {
         const orig = originalPositions[i];
         const idx = i * 3;
         
-        // Wave displacement
+        // 1. Stable Behavior (Breathing)
+        const breathe = 1 + Math.sin(time * 2) * 0.005 * state.spinSpeedMultiplier;
+        
+        // 2. Dynamic Behavior (Wave)
         const wave = Math.sin(orig.y * 4 + time * CONFIG.animation.waveSpeed) * CONFIG.animation.waveAmount;
         const wave2 = Math.cos(orig.x * 3 + time * CONFIG.animation.waveSpeed * 0.7) * CONFIG.animation.waveAmount * 0.5;
+        const dynamicFactor = 1 + wave + wave2;
+
+        // Blend based on waveInfluence
+        // If waveInfluence is 0, we use breathe. If 1, we use dynamicFactor.
+        const startX = orig.x * breathe;
+        const startY = orig.y * breathe;
+        const startZ = orig.z * breathe;
         
-        // Apply wave to position (radially outward)
-        const length = Math.sqrt(orig.x ** 2 + orig.y ** 2 + orig.z ** 2);
-        const factor = 1 + wave + wave2;
-        
-        positions[idx] = orig.x * factor;
-        positions[idx + 1] = orig.y * factor;
-        positions[idx + 2] = orig.z * factor;
+        const endX = orig.x * dynamicFactor;
+        const endY = orig.y * dynamicFactor;
+        const endZ = orig.z * dynamicFactor;
+
+        positions[idx] = startX + (endX - startX) * waveInfluence;
+        positions[idx + 1] = startY + (endY - startY) * waveInfluence;
+        positions[idx + 2] = startZ + (endZ - startZ) * waveInfluence;
     }
     
     geometry.attributes.position.needsUpdate = true;
 }
 
 /**
- * Animates ring points with oscillation
+ * Animates ring points blending behaviors
  */
-function animateRingPoints(ring, time, index) {
+function animateRingPoints(ring, time, index, state) {
     const positions = ring.geometry.attributes.position.array;
+    const waveInfluence = Math.min(1, state.waveAmount * 2); 
     
     for (let i = 0; i < ring.originalPositions.length; i++) {
         const orig = ring.originalPositions[i];
         const idx = i * 3;
         
-        // Oscillate along Y axis
-        const yOffset = Math.sin(orig.angle * 3 + time * 2 + index) * 0.1;
-        // Slight radius variation
-        const radiusOffset = Math.sin(orig.angle * 5 + time * 1.5) * 0.05;
+        // Stable chaos vs Dynamic chaos
+        const stableChaos = 0.02;
+        const dynamicChaos = 0.1;
+        const chaos = stableChaos + (dynamicChaos - stableChaos) * waveInfluence;
+        
+        const yOffset = Math.sin(orig.angle * 3 + time * 2 + index) * chaos;
+        const radiusOffset = Math.sin(orig.angle * 5 + time * 1.5) * (chaos * 0.5);
         
         const r = ring.radius + radiusOffset;
         positions[idx] = r * Math.cos(orig.angle);
