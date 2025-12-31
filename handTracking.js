@@ -7,7 +7,7 @@
 const CONFIG = {
     // MediaPipe Hands options
     hands: {
-        maxNumHands: 1,
+        maxNumHands: 2,
         modelComplexity: 1,
         minDetectionConfidence: 0.7,
         minTrackingConfidence: 0.5
